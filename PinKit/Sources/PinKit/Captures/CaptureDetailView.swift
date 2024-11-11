@@ -124,11 +124,6 @@ struct CaptureDetailView: View {
                 }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                CaptureMenuContents(capture: capture, isFavorite: capture.isFavorite)
-            }
-        }
         .navigationTitle("Capture")
         .task {
             do {

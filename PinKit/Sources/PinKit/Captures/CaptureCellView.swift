@@ -34,6 +34,9 @@ struct CaptureCellView: View {
         .overlay(alignment: .bottom) {
             VStack {
                 HStack {
+                    if capture.locallyDownloaded {
+                        Image(systemName: "checkmark")
+                    }
                     Spacer()
                     switch state {
                     case .pending:

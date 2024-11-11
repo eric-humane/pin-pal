@@ -6,12 +6,7 @@ import BackgroundTasks
 
 @main
 struct PinPalApp: App {
-    
-    #if os(iOS)
-    @UIApplicationDelegateAdaptor(AppDelegate.self)
-    var appDelegate
-    #endif
-    
+
     @State
     private var sceneAppState: AppState
 
@@ -62,13 +57,6 @@ struct PinPalApp: App {
         AppDependencyManager.shared.add(dependency: navigationStore)
         AppDependencyManager.shared.add(dependency: service)
         AppDependencyManager.shared.add(dependency: database)
-        
-        /**
-         Call `updateAppShortcutParameters` on `AppShortcutsProvider` so that the system updates the App Shortcut phrases with any changes to
-         the app's intent parameters. The app needs to call this function during its launch, in addition to any time the parameter values for
-         the shortcut phrases change.
-         */
-        PinPalShortcuts.updateAppShortcutParameters()
     }
     
     var body: some Scene {
@@ -84,7 +72,6 @@ struct PinPalApp: App {
                     switch (oldPhase, newPhase) {
                     case (.inactive, .background):
                         if sceneService.isLoggedIn() {
-                            requestRefreshBackgroundTask(for: .notes)
                             requestRefreshBackgroundTask(for: .captures)
                         }
                     default: break
@@ -109,24 +96,12 @@ struct PinPalApp: App {
                 }
 #endif
         }
-        .backgroundTask(.appRefresh(Constants.taskId(for: .notes))) {
-            await handleNotesRefresh()
-        }
         .backgroundTask(.appRefresh(Constants.taskId(for: .captures))) {
             await handleCapturesRefresh()
-        }
-        .backgroundTask(.appRefresh(Constants.taskId(for: .myData))) {
-            await handleMyDataRefresh()
         }
         #if os(visionOS)
         .defaultSize(width: 730, height: 1000)
         #endif
-        .commands {
-            CommandGroup(before: CommandGroupPlacement.newItem) {
-                Button("New Note", intent: OpenNewNoteIntent())
-                    .keyboardShortcut("N", modifiers: .command)
-            }
-        }
     }
 }
 
@@ -141,67 +116,18 @@ extension PinPalApp {
             print("Could not schedule app refresh: \(error) for \(id.rawValue)")
         }
     }
-    
-    func handleNotesRefresh() async {
-        do {
-            let intent = SyncNotesIntent()
-            intent.database = sceneDatabase
-            intent.service = sceneService
-            intent.app = sceneAppState
-            let _ = try await intent.perform()
-            requestRefreshBackgroundTask(for: .notes)
-        } catch {
-            
-        }
-    }
-    
+
     func handleCapturesRefresh() async {
         do {
             let intent = SyncCapturesIntent()
             intent.database = sceneDatabase
             intent.service = sceneService
             intent.app = sceneAppState
+            intent.navigation = sceneNavigationStore
             let _ = try await intent.perform()
             requestRefreshBackgroundTask(for: .captures)
         } catch {
-            
-        }
-    }
-    
-    func handleMyDataRefresh() async {
-        Task {
-            let intent = SyncAiMicEventsIntent()
-            intent.database = sceneDatabase
-            intent.service = sceneService
-            intent.app = sceneAppState
-            let _ = try await intent.perform()
-            requestRefreshBackgroundTask(for: .myData)
-        }
-        Task {
-            let intent = SyncMusicEventsIntent()
-            intent.database = sceneDatabase
-            intent.service = sceneService
-            intent.app = sceneAppState
-            let _ = try await intent.perform()
-            requestRefreshBackgroundTask(for: .myData)
-        }
-    }
-}
-
-class AppDelegate: NSObject, UIApplicationDelegate {
-
-    func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
-        let sceneConfiguration = UISceneConfiguration(name: "Custom Configuration", sessionRole: connectingSceneSession.role)
-        sceneConfiguration.delegateClass = SceneDelegate.self
-                     
-        return sceneConfiguration
-    }
-    
-    class SceneDelegate: UIResponder, UIWindowSceneDelegate {
-        func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
-            if Navigation.shared.activeNote == nil {
-                Navigation.shared.activeNote = .create()
-            }
+            print(error)
         }
     }
 }

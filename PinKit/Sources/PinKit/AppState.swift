@@ -2,14 +2,6 @@ import SwiftUI
 import AppIntents
 
 @Observable 
-public final class NoteFilterState {
-    public var filter = Note.all()
-    public var type: NoteFilterType = .all
-    public var sort = SortDescriptor<Note>(\.createdAt, order: .reverse)
-    public var order = SortOrder.reverse
-}
-
-@Observable 
 public final class CaptureFilterState {
     
     public enum Filter {
@@ -59,32 +51,12 @@ public final class CaptureFilterState {
 }
 
 @Observable public final class AppState: Sendable {
-    
-    public var isNotesLoading = false
-    public var totalNotesToSync = 0
-    public var numberOfNotesSynced = 0
-    
+
+    public var hasPhotosPermission = false
     public var isCapturesLoading = false
     public var totalCapturesToSync = 0
     public var numberOfCapturesSynced = 0
     
-    public var isAiMicEventsLoading = false
-    public var totalAiMicEventsToSync = 0
-    public var numberOfAiMicEventsSynced = 0
-    
-    public var isCallEventsLoading = false
-    public var totalCallEventsToSync = 0
-    public var numberOfCallEventsSynced = 0
-    
-    public var isTranslationEventsLoading = false
-    public var totalTranslationEventsToSync = 0
-    public var numberOfTranslationEventsSynced = 0
-    
-    public var isMusicEventsLoading = false
-    public var totalMusicEventsToSync = 0
-    public var numberOfMusicEventsSynced = 0
-    
-    public var noteFilter = NoteFilterState()
     public var captureFilter = CaptureFilterState()
 
     public init() {}

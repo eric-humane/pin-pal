@@ -64,7 +64,7 @@ struct QueryListView<Model: PersistentModel, Content: View, Placeholder: View>: 
     }
 }
 
-struct QueryGridView<Model: PersistentModel, Content: View, Placeholder: View>: View {
+struct QueryGridView<Model: PersistentModel, Content: View, Placeholder: View, EmptyPlaceholder: View>: View {
     
     @Environment(\.isSearching)
     private var isSearching
@@ -80,11 +80,20 @@ struct QueryGridView<Model: PersistentModel, Content: View, Placeholder: View>: 
 
     let content: (Model) -> Content
     let placeholder: () -> Placeholder
+    let emptyPlaceholder: (() -> EmptyPlaceholder)?
 
-    init(descriptor: FetchDescriptor<Model>, content: @escaping (Model) -> Content, placeholder: @escaping () -> Placeholder) {
+    init(descriptor: FetchDescriptor<Model>, content: @escaping (Model) -> Content, placeholder: @escaping () -> Placeholder) where EmptyPlaceholder == EmptyView {
         self._data = .init(descriptor, animation: .snappy)
         self.content = content
         self.placeholder = placeholder
+        self.emptyPlaceholder = nil
+    }
+    
+    init(descriptor: FetchDescriptor<Model>, content: @escaping (Model) -> Content, placeholder: @escaping () -> Placeholder, emptyPlaceholder: @escaping () -> EmptyPlaceholder) {
+        self._data = .init(descriptor, animation: .snappy)
+        self.content = content
+        self.placeholder = placeholder
+        self.emptyPlaceholder = emptyPlaceholder
     }
 
     var body: some View {
@@ -106,7 +115,11 @@ struct QueryGridView<Model: PersistentModel, Content: View, Placeholder: View>: 
             if isSearching, data.isEmpty, !isLoading {
                 ContentUnavailableView.search
             } else if data.isEmpty, isLoading {
-                ProgressView("This may take a while")
+                if let emptyPlaceholder {
+                    emptyPlaceholder()
+                } else {
+                    ProgressView("This may take a while")
+                }
             } else if data.isEmpty, !isSearching, !isFirstLoad {
                 placeholder()
             }

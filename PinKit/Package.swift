@@ -17,7 +17,8 @@ let package = Package(
         .package(url: "https://github.com/ericlewis/CollectionConcurrencyKit", branch: "main"),
         .package(url: "https://github.com/apple/swift-collections.git", .upToNextMinor(from: "1.1.0")),
         .package(url: "https://github.com/kean/Get", .upToNextMinor(from: "2.2.0")),
-        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", .upToNextMinor(from: "2.3.0"))
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", .upToNextMinor(from: "2.3.0")),
+        .package(url: "https://github.com/fumoboy007/swift-retry", .upToNextMajor(from: "0.2.4")),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -29,6 +30,7 @@ let package = Package(
                 "CollectionConcurrencyKit",
                 "Get",
                 "Models",
+                .product(name: "DMRetry", package: "swift-retry"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Collections", package: "swift-collections")
             ]),

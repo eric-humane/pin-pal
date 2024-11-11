@@ -4,9 +4,7 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.ericlewis.Pin-Pal.Notes.refresh</string>
 		<string>com.ericlewis.Pin-Pal.Captures.refresh</string>
-		<string>com.ericlewis.Pin-Pal.MyData.refresh</string>
 	</array>
 	<key>CFBundleIconFiles</key>
 	<array>
@@ -15,16 +13,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIApplicationShortcutItems</key>
-	<array>
-		<dict>
-			<key>UIApplicationShortcutItemIconType</key>
-			<string>UIApplicationShortcutIconTypeCompose</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>New Note</string>
-			<key>UIApplicationShortcutItemType</key>
-			<string>NewNoteAction</string>
-		</dict>
-	</array>
+	<array/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

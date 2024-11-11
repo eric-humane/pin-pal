@@ -4,6 +4,30 @@ import PinKit
 import SwiftUI
 import Models
 import Photos
+import Retry
+
+public enum CaptureIntentError: LocalizedError {
+    case invalidContent
+    case downloadFailed
+    case saveFailed
+    case noPhotoAccess
+    case syncFailed
+    
+    public var errorDescription: String? {
+        switch self {
+        case .invalidContent:
+            return "Unable to process capture content"
+        case .downloadFailed:
+            return "Failed to download capture"
+        case .saveFailed:
+            return "Failed to save to camera roll"
+        case .noPhotoAccess:
+            return "No access to photo library"
+        case .syncFailed:
+            return "Failed to sync captures"
+        }
+    }
+}
 
 public enum CaptureType: String, AppEnum, Codable {
     case photo = "PHOTO"
@@ -65,7 +89,7 @@ extension CaptureEntity: AppEntity {
     )
 }
 
-public struct CaptureEntityQuery: EntityQuery, EntityStringQuery, EnumerableEntityQuery {
+public struct CaptureEntityQuery: EntityQuery, EnumerableEntityQuery {
     
     public func allEntities() async throws -> [CaptureEntity] {
         try await database.fetch(Capture.all())
@@ -91,10 +115,6 @@ public struct CaptureEntityQuery: EntityQuery, EntityStringQuery, EnumerableEnti
         await ids.asyncCompactMap { id in
             try? await CaptureEntity(from: service.memory(id))
         }
-    }
-    
-    public func entities(matching string: String) async throws -> Self.Result {
-        try await entities(for: service.search(string, .captures).memories?.map(\.uuid) ?? [])
     }
 
     public func suggestedEntities() async throws -> [CaptureEntity] {
@@ -142,45 +162,6 @@ public struct GetVideoIntent: AppIntent {
     }
 }
 
-public struct GetUnprocessedVideoIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Get Unprocessed Video"
-    public static var description: IntentDescription? = .init("Returns the unprocessed video for a given capture, if it has one.",
-                                                              categoryName: "Captures",
-                                                              resultValueName: "Video"
-    )
-    public static var parameterSummary: some ParameterSummary {
-        Summary("Get unprocessed video from \(\.$capture)")
-    }
-    
-    @Parameter(title: "Capture")
-    public var capture: CaptureEntity
-
-    public init(capture: CaptureEntity) {
-        self.capture = capture
-    }
-    
-    public init(capture: Capture) {
-        self.capture = CaptureEntity(from: capture)
-    }
-    
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    public var service: HumaneCenterService
-
-    public func perform() async throws -> some IntentResult & ReturnsValue<IntentFile?> {
-        let content = try await service.memory(capture.id)
-        guard let file = content.get()?.originalVideo ?? content.get()?.video else {
-            return .result(value: nil)
-        }
-        let data = try await service.download(capture.id, file)
-        return .result(value: .init(data: data, filename: "\(file.fileUUID).mp4"))
-    }
-}
-
 public struct GetBestPhotoIntent: AppIntent {
     public static var title: LocalizedStringResource = "Get Best Photo"
     public static var description: IntentDescription? = .init("Returns the best photo for a given capture.",
@@ -220,495 +201,309 @@ public struct GetBestPhotoIntent: AppIntent {
     }
 }
 
-public struct GetOriginalPhotosIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Get Original Photos"
-    public static var description: IntentDescription? = .init("Returns the original photos for a given capture.",
-                                                              categoryName: "Captures",
-                                                              resultValueName: "Original Photos"
-    )
-    public static var parameterSummary: some ParameterSummary {
-        Summary("Get original photos from \(\.$capture)")
-    }
+// MARK: - Media Save Manager
+struct MediaSaveManager {
+    static var cachedFilenames: Set<String> = Set<String>()
+    static let cacheQueue = DispatchQueue(label: "com.example.MediaSaveManager.cacheQueue")
     
-    @Parameter(title: "Capture")
-    public var capture: CaptureEntity
-
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    var service: HumaneCenterService
-
-    public func perform() async throws -> some IntentResult & ReturnsValue<[IntentFile]> {
-        guard let captureEnv: CaptureEnvelope = try await service.memory(capture.id).get() else {
-            return .result(value: [])
-        }
-        let urlAndIds: [(UUID, URL)]? = captureEnv.originals?.compactMap({
-            guard let url = $0.downloadUrl(memoryUUID: capture.id) else {
-                return nil
-            }
-            return ($0.fileUUID, url)
-        })
-        let result = try await urlAndIds?.concurrentCompactMap { (id, url) in
-            var req = URLRequest(url: url)
-            req.setValue("Bearer \(service.accessToken!)", forHTTPHeaderField: "Authorization")
-            let (d, _) = try await URLSession.shared.data(for: req)
-            return IntentFile(data: d, filename: "\(id).png")
-        }
-        return .result(value: result ?? [])
-    }
-}
-
-public struct GetProcessedPhotosIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Get Processed Photos"
-    public static var description: IntentDescription? = .init("Returns the processed photos for a given capture.",
-                                                              categoryName: "Captures",
-                                                              resultValueName: "Processed Photos"
-    )
-    public static var parameterSummary: some ParameterSummary {
-        Summary("Get original photos from \(\.$capture)")
-    }
-    
-    @Parameter(title: "Capture")
-    public var capture: CaptureEntity
-
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    var service: HumaneCenterService
-
-    public func perform() async throws -> some IntentResult & ReturnsValue<[IntentFile]> {
-        guard let captureEnv: CaptureEnvelope = try await service.memory(capture.id).get() else {
-            return .result(value: [])
-        }
-        let urlAndIds: [(UUID, URL)]? = captureEnv.derivatives?.compactMap({
-            guard let url = $0.downloadUrl(memoryUUID: capture.id) else {
-                return nil
-            }
-            return ($0.fileUUID, url)
-        })
-        let result = try await urlAndIds?.concurrentCompactMap { (id, url) in
-            var req = URLRequest(url: url)
-            req.setValue("Bearer \(service.accessToken!)", forHTTPHeaderField: "Authorization")
-            let (d, _) = try await URLSession.shared.data(for: req)
-            return IntentFile(data: d, filename: "\(id).png")
-        }
-        return .result(value: result ?? [])
-    }
-}
-
-public struct FavoriteCapturesIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Favorite Captures"
-    public static var description: IntentDescription? = .init("Adds or removes captures from the set of favorited captures.", categoryName: "Captures")
-    public static var parameterSummary: some ParameterSummary {
-        Summary("\(\.$action) \(\.$captures) to favorites")
-    }
-
-    @Parameter(title: "Favorite Action", default: FavoriteAction.add)
-    public var action: FavoriteAction
-    
-    @Parameter(title: "Captures")
-    public var captures: [CaptureEntity]
-    
-    public init(action: FavoriteAction, captures: [CaptureEntity]) {
-        self.action = action
-        self.captures = captures
-    }
-    
-    public init(action: FavoriteAction, captures: [Capture]) {
-        self.action = action
-        self.captures = captures.map(CaptureEntity.init(from:))
-    }
-
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    public var service: HumaneCenterService
-    
-    @Dependency
-    public var database: any Database
-    
-    @Dependency
-    public var navigation: Navigation
-
-    public func perform() async throws -> some IntentResult {
-        let ids = captures.map(\.id)
-        if action == .add {
-            let _ = try await service.bulkFavorite(ids)
-        } else {
-            let _ = try await service.bulkUnfavorite(ids)
-        }
-        await ids.concurrentForEach { id in
-            do {
-                try await process(service.memory(id))
-            } catch {
-                print(error)
-            }
-        }
-        try await self.database.save()
-        navigation.show(toast: action == .add ? .favorited : .unfavorited)
-        return .result()
-    }
-    
-    private func process(_ content: MemoryContentEnvelope) async throws {
-        let newCapture = Capture(from: content)
-        await self.database.insert(newCapture)
-    }
-    
-    enum Error: Swift.Error {
-        case invalidContentType
-    }
-}
-
-public struct DeleteCapturesIntent: DeleteIntent {
-    public static var title: LocalizedStringResource = "Delete Captures"
-    public static var description: IntentDescription? = .init("Deletes the specified captures.", categoryName: "Captures")
-    public static var parameterSummary: some ParameterSummary {
-        When(\.$confirmBeforeDeleting, .equalTo, true, {
-            Summary("Delete \(\.$entities)") {
-                \.$confirmBeforeDeleting
-            }
-        }, otherwise: {
-            Summary("Immediately delete \(\.$entities)") {
-                \.$confirmBeforeDeleting
-            }
-        })
-    }
-    
-    @Parameter(title: "Captures")
-    public var entities: [CaptureEntity]
-
-    @Parameter(title: "Confirm Before Deleting", description: "If toggled, you will need to confirm the captures will be deleted", default: true)
-    var confirmBeforeDeleting: Bool
-
-    public init(entities: [CaptureEntity], confirmBeforeDeleting: Bool) {
-        self.confirmBeforeDeleting = confirmBeforeDeleting
-        self.entities = entities
-    }
-    
-    public init(entities: [Capture], confirmBeforeDeleting: Bool) {
-        self.confirmBeforeDeleting = confirmBeforeDeleting
-        self.entities = entities.map(CaptureEntity.init(from:))
-    }
-    
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    public var service: HumaneCenterService
-    
-    @Dependency
-    public var database: any Database
-
-    public func perform() async throws -> some IntentResult {
-        let ids = entities.map(\.id)
-        if confirmBeforeDeleting {
-            try await requestConfirmation(result: .result(dialog: "Are you sure you want to delete ^[\(entities.count) capture](inflect: true)?"))
-            let _ = try await service.bulkRemove(ids)
-        } else {
-            let _ = try await service.bulkRemove(ids)
+    static func saveImageToPhotoLibrary(data: Data, creationDate: Date, name: String) async throws {
+        guard let image = UIImage(data: data) else {
+            throw CaptureIntentError.invalidContent
         }
         
+        let album = try await getAlbum(named: "Ai Pin")
+        let filename = "\(name).jpg"
+        
+        // Check if the asset already exists using the cache
+        if assetExists(filename: filename) {
+            print("Image \(filename) already exists in album \(album.localizedTitle ?? "")")
+            return
+        }
+        
+        try await PHPhotoLibrary.shared().performChanges {
+            let creationRequest = PHAssetCreationRequest.forAsset()
+            let options = PHAssetResourceCreationOptions()
+            options.originalFilename = filename
+            options.shouldMoveFile = true
+            creationRequest.addResource(with: .photo, data: data, options: options)
+            creationRequest.creationDate = creationDate
+            
+            if let albumChangeRequest = PHAssetCollectionChangeRequest(for: album),
+               let assetPlaceholder = creationRequest.placeholderForCreatedAsset {
+                let enumeration: NSArray = [assetPlaceholder]
+                albumChangeRequest.addAssets(enumeration)
+            }
+        }
+        
+        // Update the cache
+        cacheQueue.sync {
+            cachedFilenames.insert(filename)
+        }
+    }
+    
+    static func saveVideoToPhotoLibrary(data: Data, filename: String, creationDate: Date) async throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(filename)
+        
+        do {
+            try data.write(to: tempURL)
+            let album = try await getAlbum(named: "Ai Pin")
+            
+            // Check if the asset already exists using the cache
+            if assetExists(filename: filename) {
+                print("Video \(filename) already exists in album \(album.localizedTitle ?? "")")
+                return
+            }
+            
+            try await PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: tempURL)
+                request?.creationDate = creationDate
+                
+                if let albumChangeRequest = PHAssetCollectionChangeRequest(for: album),
+                   let assetPlaceholder = request?.placeholderForCreatedAsset {
+                    let enumeration: NSArray = [assetPlaceholder]
+                    albumChangeRequest.addAssets(enumeration)
+                }
+            }
+            try? FileManager.default.removeItem(at: tempURL)
+            
+            // Update the cache
+            cacheQueue.sync {
+                cachedFilenames.insert(filename)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw CaptureIntentError.saveFailed
+        }
+    }
+    
+    static func getAlbum(named albumName: String) async throws -> PHAssetCollection {
+        // Existing code to fetch or create the album
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.predicate = NSPredicate(format: "title = %@", albumName)
+        let collection = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: fetchOptions)
+        
+        var album: PHAssetCollection
+        if let existingAlbum = collection.firstObject {
+            album = existingAlbum
+        } else {
+            var albumPlaceholder: PHObjectPlaceholder?
+            try await PHPhotoLibrary.shared().performChanges {
+                let createAlbumRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: albumName)
+                albumPlaceholder = createAlbumRequest.placeholderForCreatedAssetCollection
+            }
+            guard let placeholder = albumPlaceholder else {
+                throw CaptureIntentError.saveFailed
+            }
+            let fetchResult = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [placeholder.localIdentifier], options: nil)
+            guard let newAlbum = fetchResult.firstObject else {
+                throw CaptureIntentError.saveFailed
+            }
+            album = newAlbum
+        }
+        
+        // Fetch and cache filenames
+        cacheFilenames(for: album)
+        
+        return album
+    }
+    
+    static func cacheFilenames(for album: PHAssetCollection) {
+        let fetchOptions = PHFetchOptions()
+        let assets = PHAsset.fetchAssets(in: album, options: fetchOptions)
+        var filenames = Set<String>()
+        assets.enumerateObjects { (asset, _, _) in
+            let resources = PHAssetResource.assetResources(for: asset)
+            for resource in resources {
+                filenames.insert(resource.originalFilename)
+            }
+        }
+        cacheQueue.sync {
+            cachedFilenames = filenames
+        }
+    }
+    
+    static func assetExists(filename: String) -> Bool {
+        return cacheQueue.sync {
+            cachedFilenames.contains(filename)
+        }
+    }
+}
+
+// MARK: - Sync Captures Intent
+public struct SyncCapturesIntent: AppIntent, TaskableIntent {
+    public static var title: LocalizedStringResource = "Sync Captures"
+    
+    @Dependency public var service: HumaneCenterService
+    @Dependency public var database: any Database
+    @Dependency public var app: AppState
+    @Dependency public var navigation: Navigation
+    
+    public init() {}
+    
+    public func perform() async throws -> some IntentResult {
+        defer {
+            Task.detached {
+                await MainActor.run {
+                    app.isCapturesLoading = false
+                }
+            }
+        }
+        
+        await MainActor.run {
+            app.isCapturesLoading = true
+        }
+        
+        let chunkSize = 20
+        
+        do {
+            let total = try await service.captures(0, 1).totalElements
+            let totalPages = (total + chunkSize - 1) / chunkSize
+            
+            // Check photo library access first
+            if total > 0 {
+                let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+                if status == .notDetermined {
+                    let newStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+                    guard newStatus == .authorized else {
+                        throw CaptureIntentError.noPhotoAccess
+                    }
+                }
+                await MainActor.run {
+                    app.hasPhotosPermission = true
+                }
+            }
+            
+            await MainActor.run {
+                withAnimation {
+                    app.totalCapturesToSync = total
+                    app.numberOfCapturesSynced = 0
+                }
+            }
+            
+            // Process all pages concurrently
+            let pageIndices = 0..<totalPages
+            let processedIdsArray = try await pageIndices.concurrentMap { page in
+                let data = try await service.captures(page, chunkSize)
+                return try await processCaptures(data.content)
+            }
+            let processedIds = processedIdsArray.flatMap { $0 }
+            
+            // Clean up deleted captures
+            try await cleanupDeletedCaptures(processedIds)
+            
+            await MainActor.run {
+                withAnimation {
+                    app.totalCapturesToSync = 0
+                    app.numberOfCapturesSynced = 0
+                }
+            }
+            
+            return .result()
+            
+        } catch {
+            await MainActor.run {
+                app.totalCapturesToSync = 0
+                app.numberOfCapturesSynced = 0
+            }
+            throw CaptureIntentError.syncFailed
+        }
+    }
+    
+    private func processCaptures(_ content: [MemoryContentEnvelope]) async throws -> [UUID] {
+        try await withThrowingTaskGroup(of: UUID.self) { group in
+            for envelope in content {
+                group.addTask {
+                    let capture = try Capture(from: envelope)
+                    
+                    // Only download if not already downloaded
+                    let existingCapture = try? await database.fetch(
+                        Capture.all(predicate: #Predicate<Capture> { $0.uuid == envelope.id })
+                    ).first
+                    
+                    // Use existing locallyDownloaded value if available
+                    let isLocallyDownloaded = existingCapture?.locallyDownloaded ?? false
+                    
+                    if !isLocallyDownloaded {
+                        do {
+                            try await self.downloadToPhotoLibrary(envelope)
+                            capture.locallyDownloaded = true
+                        } catch {
+                            // Log error but continue with sync
+                            print("Failed to download capture \(envelope.id): \(error)")
+                        }
+                    } else {
+                        capture.locallyDownloaded = true
+                    }
+                    
+                    capture.lastSyncDate = Date()
+                    await database.insert(capture)
+                    
+                    await MainActor.run {
+                        withAnimation {
+                            app.numberOfCapturesSynced += 1
+                        }
+                    }
+                    
+                    return envelope.id
+                }
+            }
+            
+            var processedIds = [UUID]()
+            for try await id in group {
+                processedIds.append(id)
+            }
+            return processedIds
+        }
+    }
+    
+    private func downloadToPhotoLibrary(_ envelope: MemoryContentEnvelope) async throws {
+        let captureEntity = await CaptureEntity(from: envelope)
+        
+        switch captureEntity.type {
+        case .photo:
+            try await retry {
+                let photoIntent = GetBestPhotoIntent(capture: captureEntity)
+                let result = try await photoIntent.perform()
+                
+                if let photo = result.value,
+                   let data = photo?.data {
+                    try await MediaSaveManager.saveImageToPhotoLibrary(
+                        data: data,
+                        creationDate: captureEntity.createdAt,
+                        name: captureEntity.id.uuidString
+                    )
+                } else {
+                    throw CaptureIntentError.downloadFailed
+                }
+                
+            }
+            
+        case .video:
+            try await retry {
+                let videoIntent = GetVideoIntent(capture: captureEntity)
+                let result = try await videoIntent.perform()
+                
+                if let video = result.value,
+                   let data = video?.data,
+                   let filename = video?.filename {
+                    try await MediaSaveManager.saveVideoToPhotoLibrary(
+                        data: data,
+                        filename: filename,
+                        creationDate: captureEntity.createdAt
+                    )
+                } else {
+                    throw CaptureIntentError.downloadFailed
+                }
+            }
+        }
+    }
+    
+    private func cleanupDeletedCaptures(_ validIds: [UUID]) async throws {
         let predicate = #Predicate<Capture> {
-            ids.contains($0.uuid)
+            !validIds.contains($0.uuid)
         }
         try await database.delete(where: predicate)
         try await database.save()
-        return .result()
-    }
-}
-
-public struct ShowCapturesIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Show Captures"
-    public static var description: IntentDescription? = .init("Get quick access to captures in Pin Pal", categoryName: "Captures")
-    
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = true
-    public static var isDiscoverable: Bool = true
-
-    @Dependency
-    public var navigation: Navigation
-    
-    public func perform() async throws -> some IntentResult {
-        navigation.selectedTab = .captures
-        return .result()
-    }
-}
-
-public struct SearchCapturesIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Search Captures"
-    public static var description: IntentDescription? = .init("Performs a search for the specified text.", categoryName: "Captures")
-    public static var parameterSummary: some ParameterSummary {
-        Summary("Search \(\.$query) in Captures")
-    }
-    
-    @Parameter(title: "Text")
-    public var query: String
-    
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    public var service: HumaneCenterService
-
-    public func perform() async throws -> some IntentResult & ReturnsValue<[CaptureEntity]> {
-        let results = try await service.search(query, .captures)
-        guard let ids = results.memories?.map(\.uuid) else {
-            return .result(value: [])
-        }
-        let memories = await ids.concurrentCompactMap { id in
-            try? await service.memory(id)
-        }
-        return await .result(value: memories.concurrentMap(CaptureEntity.init(from:)))
-    }
-}
-
-struct SyncCapturesIntent: AppIntent, TaskableIntent {
-    public static var title: LocalizedStringResource = "Sync Captures"
-
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = false
-    
-    @Dependency
-    public var service: HumaneCenterService
-    
-    @Dependency
-    public var database: any Database
-    
-    @Dependency
-    public var app: AppState
-    
-    public func perform() async throws -> some IntentResult {
-        let chunkSize = 20
-        let total = try await service.captures(0, 1).totalElements
-        let totalPages = (total + chunkSize - 1) / chunkSize
-
-        await MainActor.run {
-            withAnimation {
-                app.totalCapturesToSync = total
-            }
-        }
-        
-        let ids = try await (0..<totalPages).concurrentMap { page in
-            let data = try await service.captures(page, chunkSize)
-            let result = try await data.content.concurrentMap(process)
-                        
-            await MainActor.run {
-                withAnimation {
-                    app.numberOfCapturesSynced += result.count
-                }
-            }
-                        
-            return result
-        }
-        .flatMap({ $0 })
-                        
-        try await self.database.save()
-
-        let predicate = #Predicate<Capture> {
-            !ids.contains($0.uuid)
-        }
-        try await self.database.delete(where: predicate)
-        try await self.database.save()
-        
-        await MainActor.run {
-            app.totalCapturesToSync = 0
-            app.numberOfCapturesSynced = 0
-        }
-    
-        return .result()
-    }
-    
-    private func process(_ content: MemoryContentEnvelope) async throws -> UUID {
-        let newCapture = Capture(from: content)
-        await self.database.insert(newCapture)
-        return content.id
-    }
-    
-    enum Error: Swift.Error {
-        case invalidContentType
-    }
-}
-
-public struct CopyCaptureToClipboardIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Save Capture to Clipboard"
-    public static var description: IntentDescription? = .init("Copies a specified Capture to the current Clipboard.", categoryName: "Captures")
-    public static var parameterSummary: some ParameterSummary {
-        Summary("Copy \(\.$capture) to Clipboard")
-    }
-    
-    @Parameter(title: "Capture")
-    public var capture: CaptureEntity
-    
-    public init(capture: CaptureEntity) {
-        self.capture = capture
-    }
-    
-    public init(capture: Capture) {
-        self.capture = CaptureEntity(from: capture)
-    }
-
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    public var service: HumaneCenterService
-    
-    @Dependency
-    public var navigation: Navigation
-
-    public func perform() async throws -> some IntentResult {
-        
-        if capture.type == .photo {
-            guard let data = try await GetBestPhotoIntent(capture: capture).perform().value??.data else {
-                return .result()
-            }
-            UIPasteboard.general.image = UIImage(data: data)
-        }
-        navigation.show(toast: .copiedToClipboard)
-        return .result()
-    }
-    
-    enum Error: Swift.Error {
-        case invalidContent
-    }
-}
-
-public struct SaveCaptureToCameraRollIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Save Capture to Camera Roll"
-    public static var description: IntentDescription? = .init("Saves a specified Capture to the user's Camera Roll.", categoryName: "Captures")
-    public static var parameterSummary: some ParameterSummary {
-        Summary("Save \(\.$capture) to Camera Roll")
-    }
-    
-    @Parameter(title: "Capture")
-    public var capture: CaptureEntity
-    
-    public init(capture: CaptureEntity) {
-        self.capture = capture
-    }
-    
-    public init(capture: Capture) {
-        self.capture = CaptureEntity(from: capture)
-    }
-    
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    public var service: HumaneCenterService
-    
-    @Dependency
-    public var navigation: Navigation
-
-    public func perform() async throws -> some IntentResult {
-        navigation.show(toast: .downloadingCapture)
-        switch capture.type {
-        case .photo:
-            let file = try await GetBestPhotoIntent(capture: capture).perform()
-            guard let photo = file.value, let name = photo?.filename, let data = photo?.data else {
-                navigation.show(toast: .error)
-                return .result()
-            }
-            let targetURL: URL = .temporaryDirectory.appending(path: name)
-            try data.write(to: targetURL)
-            try await PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: targetURL)
-                request?.creationDate = Date()
-            }
-        case .video:
-            let videoFile = try await GetVideoIntent(capture: capture).perform()
-            guard let video = videoFile.value, let filename = video?.filename, let data = video?.data else {
-                navigation.show(toast: .error)
-                return .result()
-            }
-            let targetURL: URL = .temporaryDirectory.appending(path: filename)
-            try data.write(to: targetURL)
-            try await PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: targetURL)
-                request?.creationDate = Date()
-            }
-        }
-        navigation.show(toast: .captureSaved)
-        return .result()
-    }
-    
-    enum Error: Swift.Error {
-        case invalidContent
-    }
-}
-
-public struct SaveUnprocessedVideoToCameraRollIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Save Unprocessed Video to Camera Roll"
-    public static var description: IntentDescription? = .init("Saves a specified Capture's unprocessed video to the user's Camera Roll.", categoryName: "Captures")
-    public static var parameterSummary: some ParameterSummary {
-        Summary("Save unprocessed video for \(\.$capture) to Camera Roll")
-    }
-    
-    @Parameter(title: "Capture")
-    public var capture: CaptureEntity
-    
-    public init(capture: CaptureEntity) {
-        self.capture = capture
-    }
-    
-    public init(capture: Capture) {
-        self.capture = CaptureEntity(from: capture)
-    }
-    
-    public init() {}
-    
-    public static var openAppWhenRun: Bool = false
-    public static var isDiscoverable: Bool = true
-    
-    @Dependency
-    public var service: HumaneCenterService
-    
-    @Dependency
-    public var navigation: Navigation
-
-    public func perform() async throws -> some IntentResult {
-        navigation.show(toast: .downloadingCapture)
-        switch capture.type {
-        case .photo:
-            break
-        case .video:
-            let videoFile = try await GetUnprocessedVideoIntent(capture: capture).perform()
-            guard let video = videoFile.value, let filename = video?.filename, let data = video?.data else {
-                navigation.show(toast: .error)
-                return .result()
-            }
-            let targetURL: URL = .temporaryDirectory.appending(path: filename)
-            try data.write(to: targetURL)
-            try await PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: targetURL)
-                request?.creationDate = Date()
-            }
-        }
-        navigation.show(toast: .captureSaved)
-        return .result()
-    }
-    
-    enum Error: Swift.Error {
-        case invalidContent
     }
 }

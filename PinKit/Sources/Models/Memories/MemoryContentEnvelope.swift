@@ -3,14 +3,11 @@ import Foundation
 public struct MemoryContentEnvelope: Codable, Identifiable, Hashable {
     enum DataClass: Codable, Hashable {
         case capture(CaptureEnvelope)
-        case note(NoteEnvelope)
         case unknown
         
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            if let note = try? container.decodeIfPresent(NoteEnvelope.self, forKey: .note) {
-                self = .note(note)
-            } else if let s = try? decoder.singleValueContainer(), let capture = try? s.decode(CaptureEnvelope.self) {
+            if let s = try? decoder.singleValueContainer(), let capture = try? s.decode(CaptureEnvelope.self) {
                 self = .capture(capture)
             } else {
                 self = .unknown
@@ -19,9 +16,7 @@ public struct MemoryContentEnvelope: Codable, Identifiable, Hashable {
         
         func encode(to encoder: any Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
-            if case let .note(note) = self {
-                try container.encode(note, forKey: .note)
-            } else if case let .capture(capture) = self {
+            if case let .capture(capture) = self {
                 try container.encode(capture, forKey: .thumbnail)
             }
         }
@@ -35,8 +30,6 @@ public struct MemoryContentEnvelope: Codable, Identifiable, Hashable {
             switch self {
             case .capture(let captureEnvelope):
                 hasher.combine(captureEnvelope)
-            case .note(let note):
-                hasher.combine(note)
             case .unknown:
                 hasher.combine("unknown")
             }
@@ -66,12 +59,7 @@ public struct MemoryContentEnvelope: Codable, Identifiable, Hashable {
         self.favorite = try container.decode(Bool.self, forKey: .favorite)
         self.location = try container.decodeIfPresent(String.self, forKey: .location)
 
-        if case var .note(note) = self.data {
-            note.memoryId = self.uuid
-            note.createdAt = self.userCreatedAt
-            note.modifiedAt = self.userLastModified
-            self.data = .note(note)
-        } else if case var .capture(capture) = self.data {
+        if case var .capture(capture) = self.data {
             capture.memoryId = self.uuid
             self.data = .capture(capture)
         }
@@ -89,13 +77,6 @@ public struct MemoryContentEnvelope: Codable, Identifiable, Hashable {
 }
 
 extension MemoryContentEnvelope {
-    public func get() -> NoteEnvelope? {
-        switch data {
-        case let .note(note): note
-        default: nil
-        }
-    }
-    
     public func get() -> CaptureEnvelope? {
         switch data {
         case let .capture(capture): capture

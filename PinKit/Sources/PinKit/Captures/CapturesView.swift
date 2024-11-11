@@ -10,33 +10,23 @@ struct CapturesView: View {
         case favorites
     }
 
-    @Environment(\.database)
-    private var database
-    
-    @Environment(HumaneCenterService.self)
-    private var service
+    @Environment(Navigation.self)
+    private var navigation
     
     @Environment(AppState.self)
     private var app
-
-    @State
-    private var query = ""
 
     @State
     private var isFirstLoad = true
 
     @State
     private var imageContentMode = ContentMode.fill
-    
-    @State
-    private var ids: [UUID] = []
- 
+
     var body: some View {
         let captureFilter = app.captureFilter
         NavigationStack {
             list
                 .environment(\.imageContentMode, imageContentMode)
-                .task(id: query, search)
                 .onChange(of: captureFilter.order) {
                     withAnimation(.snappy) {
                         captureFilter.sort.order = captureFilter.order
@@ -44,13 +34,6 @@ struct CapturesView: View {
                 }
                 .environment(\.isLoading, app.isCapturesLoading)
                 .environment(\.isFirstLoad, isFirstLoad)
-                .overlay(alignment: .bottom) {
-                    SyncStatusView(
-                        current: \.numberOfCapturesSynced,
-                        total: \.totalCapturesToSync
-                    )
-                }
-                .searchable(text: $query)
                 .navigationTitle("Captures")
                 .toolbar {
                     toolbar
@@ -65,28 +48,22 @@ struct CapturesView: View {
     }
     
     var predicate: Predicate<Capture> {
-        if !query.isEmpty {
-            return #Predicate<Capture> {
-                ids.contains($0.uuid)
+        switch app.captureFilter.type {
+        case .all:
+            return #Predicate<Capture> { _ in
+                true
             }
-        } else {
-            switch app.captureFilter.type {
-            case .all:
-                return #Predicate<Capture> { _ in
-                    true
-                }
-            case .photo:
-                return #Predicate<Capture> {
-                    $0.isPhoto
-                }
-            case .video:
-                return #Predicate<Capture> {
-                    !$0.isPhoto
-                }
-            case .favorites:
-                return #Predicate<Capture> {
-                    $0.isFavorite
-                }
+        case .photo:
+            return #Predicate<Capture> {
+                $0.isPhoto
+            }
+        case .video:
+            return #Predicate<Capture> {
+                !$0.isPhoto
+            }
+        case .favorites:
+            return #Predicate<Capture> {
+                $0.isFavorite
             }
         }
     }
@@ -107,20 +84,30 @@ struct CapturesView: View {
                     type: capture.type
                 )
             }
-            .contextMenu {
-                CaptureMenuContents(capture: capture, isFavorite: capture.isFavorite)
-            } preview: {
-                CaptureImageView(capture: capture)
-            }
             .buttonStyle(.plain)
         } placeholder: {
             ContentUnavailableView("No captures yet", systemImage: "camera.aperture")
+        } emptyPlaceholder: {
+            ProgressView("syncing: \(app.numberOfCapturesSynced)/\(app.totalCapturesToSync)",
+                         value: Float(app.numberOfCapturesSynced),
+                         total: Float(app.totalCapturesToSync))
+            .progressViewStyle(.circular)
         }
         .refreshable(intent: SyncCapturesIntent())
     }
     
     @ToolbarContentBuilder
     var toolbar: some ToolbarContent {
+        if !app.hasPhotosPermission {
+            ToolbarItem(placement: .status) {
+                Text("Need permission.")
+            }
+        } else if app.isCapturesLoading {
+            ToolbarItem(placement: .status) {
+                Text("syncing: \(app.numberOfCapturesSynced)/\(app.totalCapturesToSync)")
+                    .monospaced()
+            }
+        }
         ToolbarItemGroup(placement: .secondaryAction) {
             @Bindable var captureFilter = app.captureFilter
             if imageContentMode == .fill {
@@ -155,31 +142,10 @@ struct CapturesView: View {
                     }
                 }
             }
-        }
-    }
-}
-
-extension CapturesView {
-    func search() async {
-        do {
-            app.isCapturesLoading = true
-            try await Task.sleep(for: .milliseconds(300))
-            let intent = SearchCapturesIntent()
-            intent.query = query
-            intent.service = service
-            guard !query.isEmpty, let result = try await intent.perform().value else {
-                self.ids = []
-                app.isCapturesLoading = false
-                return
+            Section {
+                Button("Sign Out", role: .destructive, intent: _SignOutIntent())
+                .tint(.red)
             }
-            withAnimation(.snappy) {
-                self.ids = result.map(\.id)
-                app.isCapturesLoading = false
-            }
-        } catch is CancellationError {
-            
-        } catch {
-            
         }
     }
 }

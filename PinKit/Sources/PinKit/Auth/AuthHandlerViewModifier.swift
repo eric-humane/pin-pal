@@ -25,17 +25,11 @@ public struct AuthHandlerViewModifier: ViewModifier {
         content
             .sheet(isPresented: $navigation.authenticationPresented, onDismiss: {
                 Task {
-                    let intent = SyncNotesIntent()
-                    intent.database = database
-                    intent.service = api
-                    intent.app = app
-                    try await intent.perform()
-                }
-                Task {
                     let intent = SyncCapturesIntent()
                     intent.database = database
                     intent.service = api
                     intent.app = app
+                    intent.navigation = navigation
                     try await intent.perform()
                 }
             }) {
